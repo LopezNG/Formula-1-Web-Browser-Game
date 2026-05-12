@@ -347,7 +347,7 @@ export class F1Car {
       0.35,
       1 - (this.speedKmh / this.maxSpeedKmh) * (1 - this.steerSpeedFalloff)
     );
-    this.steerTarget = input.steer * this.maxSteer * speedFactor;
+    this.steerTarget = -input.steer * this.maxSteer * speedFactor;
 
     // Smooth the steering input (prevent twitchy direction changes).
     const k = 1 - Math.exp(-dt * 12);

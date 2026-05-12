@@ -358,6 +358,13 @@ export class F1Car {
 
   private applyForces(dt: number) {
     const body = this.body;
+    // Rapier keeps user-added forces/torques until they are explicitly reset.
+    // The car controller rebuilds suspension, aero, engine, and drag forces
+    // every fixed step, so clear the previous step first to prevent force
+    // accumulation from launching the chassis.
+    body.resetForces(true);
+    body.resetTorques(true);
+
     const t = body.translation();
     const q = body.rotation();
     const quat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
@@ -595,6 +602,8 @@ export class F1Car {
     );
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.resetForces(true);
+    this.body.resetTorques(true);
     this.smoothedSteer = 0;
     this.steerTarget = 0;
     this.offTrackTimer = 0;

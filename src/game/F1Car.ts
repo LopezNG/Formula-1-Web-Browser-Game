@@ -48,6 +48,7 @@ export class F1Car {
   readonly resetGripFront = 95; // lateral grip strength multiplier
   readonly resetGripRear = 90;
   readonly handbrakeRearGrip = 18;
+  readonly lowSpeedSteerAssist = 8500;
 
   // -- Dynamic state -------------------------------------------------------
   private smoothedSteer = 0;
@@ -88,7 +89,8 @@ export class F1Car {
         w: spawnQuat.w,
       })
       .setLinearDamping(0.08)
-      .setAngularDamping(0.5)
+      .setAngularDamping(2.0)
+      .enabledRotations(false, true, false)
       .setCcdEnabled(true);
     this.body = this.physics.world.createRigidBody(bodyDesc);
 
@@ -364,6 +366,9 @@ export class F1Car {
     // accumulation from launching the chassis.
     body.resetForces(true);
     body.resetTorques(true);
+    body.setAngularDamping(2.0);
+    body.setEnabledRotations(false, true, false, true);
+    this.keepChassisUpright();
 
     const t = body.translation();
     const q = body.rotation();
@@ -385,6 +390,7 @@ export class F1Car {
     this.rpm01 = Math.min(1, Math.abs(forwardSpeed) / (this.maxSpeedKmh / 3.6));
 
     let groundedCount = 0;
+    let frontGroundedCount = 0;
 
     for (const wheel of this.wheels) {
       // World-space anchor at the top of the suspension.
@@ -409,6 +415,7 @@ export class F1Car {
       }
       wheel.grounded = true;
       groundedCount++;
+      if (wheel.isFront) frontGroundedCount++;
 
       const contactDistance = hit.toi; // distance from anchor to ground
       const extension = Math.max(0, contactDistance - wheel.radius);
@@ -459,9 +466,10 @@ export class F1Car {
       const slipReduction = Math.min(1, Math.abs(latVel) / 18);
       grip *= 1 - 0.55 * slipReduction;
 
+      const gripResponse = 1 - Math.exp(-grip * dt);
       const gripImpulse = wheelRight
         .clone()
-        .multiplyScalar(-latVel * grip * dt);
+        .multiplyScalar(-latVel * (this.mass / 4) * gripResponse);
       this.applyImpulseAtPoint(gripImpulse, contactPoint);
 
       // ---- Engine force -----------------------------------------------
@@ -514,6 +522,20 @@ export class F1Car {
       this.applyForceAtPoint(
         new THREE.Vector3(0, downforce, 0),
         pos.clone().add(forwardWorld.clone().multiplyScalar(0.5))
+      );
+    }
+
+    // The tire impulses above do the real steering once the car is moving.
+    // This assist gives the chassis enough yaw authority at launch/low speed
+    // so A/D and arrow steering feel responsive instead of waiting for speed.
+    if (frontGroundedCount > 0 && Math.abs(this.smoothedSteer) > 0.001) {
+      const speedAssist = THREE.MathUtils.clamp(Math.abs(forwardSpeed) / 18, 0.25, 1);
+      const steeringTorque = upWorld
+        .clone()
+        .multiplyScalar(this.smoothedSteer * this.lowSpeedSteerAssist * speedAssist);
+      body.addTorque(
+        { x: steeringTorque.x, y: steeringTorque.y, z: steeringTorque.z },
+        true
       );
     }
 
@@ -604,9 +626,31 @@ export class F1Car {
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.body.resetForces(true);
     this.body.resetTorques(true);
+    this.body.setAngularDamping(2.0);
+    this.body.setEnabledRotations(false, true, false, true);
     this.smoothedSteer = 0;
     this.steerTarget = 0;
     this.offTrackTimer = 0;
+  }
+
+  /** Keep the physics chassis upright while preserving its current heading. */
+  private keepChassisUpright() {
+    const q = this.body.rotation();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(
+      new THREE.Quaternion(q.x, q.y, q.z, q.w)
+    );
+    forward.y = 0;
+    if (forward.lengthSq() < 0.0001) return;
+
+    const yaw = Math.atan2(forward.x, forward.z);
+    const upright = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(0, 1, 0),
+      yaw
+    );
+    this.body.setRotation(
+      { x: upright.x, y: upright.y, z: upright.z, w: upright.w },
+      true
+    );
   }
 
   /** Off-track detection and auto-recovery. Called from Game with the circuit reference. */

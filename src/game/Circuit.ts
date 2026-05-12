@@ -3,6 +3,14 @@ import RAPIER from "@dimforge/rapier3d-compat";
 import type { Physics } from "./Physics";
 import type { Checkpoint } from "./LapSystem";
 
+type TrackSample = { p: THREE.Vector3; t: THREE.Vector3; n: THREE.Vector3 };
+
+interface TrackIntersection {
+  offset: number;
+  aIndex: number;
+  bIndex: number;
+}
+
 /**
  * The Circuit owns:
  *   1. A parametric closed centerline (Catmull-Rom) defining the racing line.
@@ -15,7 +23,7 @@ import type { Checkpoint } from "./LapSystem";
  */
 export class Circuit {
   readonly trackWidth = 14;
-  readonly samples: { p: THREE.Vector3; t: THREE.Vector3; n: THREE.Vector3 }[];
+  readonly samples: TrackSample[];
   readonly curve: THREE.CatmullRomCurve3;
   readonly checkpoints: Checkpoint[] = [];
   /** Pose for spawning the player at the start line. */
@@ -30,29 +38,30 @@ export class Circuit {
     // fast esses, a long sweeping right, hairpin, back straight, chicane, final loop.
     const waypoints: [number, number][] = [
       [0, 0],
-      [0, 80],
+      [0, 90],
       [0, 180],
-      [10, 240],
-      [60, 280],
-      [140, 280],
-      [200, 250],
-      [240, 200],
-      [260, 130],
+      [20, 240],
+      [80, 280],
+      [150, 270],
+      [220, 220],
+      [260, 140],
       [240, 70],
-      [190, 40],
-      [120, 30],
-      [50, 30],
-      [-10, 60],
-      [-60, 50],
-      [-110, 80],
-      [-140, 40],
-      [-130, -20],
-      [-80, -40],
-      [-20, -20],
+      [190, 20],
+      [120, 0],
+      [80, -50],
+      [20, -80],
+      [-60, -70],
+      [-130, -35],
+      [-150, 30],
+      [-110, 75],
+      [-70, 45],
+      [-50, -5],
+      [-20, -35],
+      [5, -20],
     ];
 
     const points = waypoints.map(([x, z]) => new THREE.Vector3(x, 0, z));
-    this.curve = new THREE.CatmullRomCurve3(points, true, "catmullrom", 0.5);
+    this.curve = new THREE.CatmullRomCurve3(points, true, "centripetal");
 
     const SAMPLES = 480;
     this.samples = [];
@@ -64,6 +73,7 @@ export class Circuit {
       const n = new THREE.Vector3(t.z, 0, -t.x).normalize();
       this.samples.push({ p, t, n });
     }
+    this.validateTrackDoesNotOverlap();
 
     this.spawnPosition = this.samples[2].p
       .clone()
@@ -81,6 +91,106 @@ export class Circuit {
     this.buildStartFinish();
     this.buildScenery();
     this.buildCheckpoints();
+  }
+
+  private validateTrackDoesNotOverlap() {
+    const half = this.trackWidth / 2;
+    const barrierOffset = half + 2.5;
+    const intersections = this.findTrackIntersections([
+      0,
+      half,
+      -half,
+      barrierOffset,
+      -barrierOffset,
+    ]);
+
+    if (intersections.length === 0) return;
+
+    const first = intersections[0];
+    throw new Error(
+      `Invalid circuit geometry: offset ${first.offset} intersects between samples ${first.aIndex} and ${first.bIndex}.`
+    );
+  }
+
+  private findTrackIntersections(offsets: number[]): TrackIntersection[] {
+    const intersections: TrackIntersection[] = [];
+    const N = this.samples.length;
+    const localSegmentSkip = 4;
+
+    for (const offset of offsets) {
+      for (let i = 0; i < N; i++) {
+        const a1 = this.offsetSamplePoint(i, offset);
+        const a2 = this.offsetSamplePoint((i + 1) % N, offset);
+
+        for (let j = i + 1; j < N; j++) {
+          const separation = Math.abs(i - j);
+          if (
+            separation <= localSegmentSkip ||
+            separation >= N - localSegmentSkip
+          ) {
+            continue;
+          }
+
+          const b1 = this.offsetSamplePoint(j, offset);
+          const b2 = this.offsetSamplePoint((j + 1) % N, offset);
+          if (Circuit.segmentsIntersect2D(a1, a2, b1, b2)) {
+            intersections.push({ offset, aIndex: i, bIndex: j });
+          }
+        }
+      }
+    }
+
+    return intersections;
+  }
+
+  private offsetSamplePoint(index: number, offset: number) {
+    const s = this.samples[index];
+    return new THREE.Vector2(
+      s.p.x + s.n.x * offset,
+      s.p.z + s.n.z * offset
+    );
+  }
+
+  private static segmentsIntersect2D(
+    a: THREE.Vector2,
+    b: THREE.Vector2,
+    c: THREE.Vector2,
+    d: THREE.Vector2
+  ) {
+    const epsilon = 1e-6;
+    const abC = Circuit.orientation2D(a, b, c);
+    const abD = Circuit.orientation2D(a, b, d);
+    const cdA = Circuit.orientation2D(c, d, a);
+    const cdB = Circuit.orientation2D(c, d, b);
+
+    if (Math.abs(abC) < epsilon && Circuit.pointOnSegment2D(a, b, c)) return true;
+    if (Math.abs(abD) < epsilon && Circuit.pointOnSegment2D(a, b, d)) return true;
+    if (Math.abs(cdA) < epsilon && Circuit.pointOnSegment2D(c, d, a)) return true;
+    if (Math.abs(cdB) < epsilon && Circuit.pointOnSegment2D(c, d, b)) return true;
+
+    return abC * abD < 0 && cdA * cdB < 0;
+  }
+
+  private static orientation2D(
+    a: THREE.Vector2,
+    b: THREE.Vector2,
+    c: THREE.Vector2
+  ) {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  }
+
+  private static pointOnSegment2D(
+    a: THREE.Vector2,
+    b: THREE.Vector2,
+    p: THREE.Vector2
+  ) {
+    const epsilon = 1e-6;
+    return (
+      p.x >= Math.min(a.x, b.x) - epsilon &&
+      p.x <= Math.max(a.x, b.x) + epsilon &&
+      p.y >= Math.min(a.y, b.y) - epsilon &&
+      p.y <= Math.max(a.y, b.y) + epsilon
+    );
   }
 
   // ---------------------------------------------------------------------------
